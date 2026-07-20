@@ -1,0 +1,60 @@
+name: fmkorea 뽀삐햄 알리미
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # 10분마다 (GitHub 사정으로 지연될 수 있음)
+  workflow_dispatch: {}       # 수동 실행 버튼
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fmkorea-alert
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Playwright 설치
+        run: pip install playwright
+
+      - name: 크롬 브라우저 캐시
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}
+
+      - name: 크롬 브라우저 설치 (캐시 없을 때만)
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium
+
+      - name: 알리미 실행
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python fmkorea_alert.py
+
+      - name: 마지막 글번호 저장 (변경 시)
+        run: |
+          if [[ -n "$(git status --porcelain fmkorea_state.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add fmkorea_state.json
+            git commit -m "chore: update last-seen state [skip ci]"
+            for i in 1 2 3; do
+              git pull --rebase origin "${GITHUB_REF_NAME}" && git push && break
+              echo "push 재시도 $i..."; sleep 3
+            done
+          else
+            echo "변경 없음 — 커밋 생략"
+          fi
