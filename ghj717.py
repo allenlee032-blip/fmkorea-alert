@@ -241,18 +241,23 @@ def watch():
     normal_gap = round(len(schedule) * (MEMBER_GAP_SEC + 7) / 60)
     print(f"감시 모드 시작 — 한 바퀴 {len(schedule)}칸 "
           f"(우선순위 약 {prio_gap}분마다 / 일반 약 {normal_gap}분마다). Ctrl+C 로 중지")
+    # 시작 메시지는 딱 한 번만 (멤버별로 스팸 안 보냄)
+    try:
+        send_telegram(f"✅ fmkorea 알리미 감시 시작! (총 {len(MEMBERS)}명 감시)\n"
+                      "새 글이 올라오면 알려드릴게요.")
+    except Exception as e:
+        print(f"시작 메시지 전송 실패: {e}")
+
     state = load_state()
     idx = 0
     while True:
-        first = []
         name, mid, srl = schedule[idx % len(schedule)]
         idx += 1
         try:
-            check_member(state, name, mid, srl, first)
+            check_member(state, name, mid, srl, [])   # 첫 감시는 조용히 기준만 잡음
             save_state(state)
         except Exception as e:
             print(f"[{name}] 예외: {e}")
-        announce(first)
         time.sleep(MEMBER_GAP_SEC + random.randint(0, 15))
 
 
