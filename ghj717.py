@@ -140,7 +140,12 @@ def parse_posts(html):
         hm = re.search(r'href="([^"]+)"', am.group(0))
         if not hm:
             continue
-        sm = re.search(r'(\d{9,})', hm.group(1))
+        href = hm.group(1)
+        # 글번호(document_srl)를 정확히 추출.
+        # /index.php?...search_keyword=회원번호&document_srl=글번호 형식에서
+        # 회원번호를 글번호로 착각하지 않도록 document_srl 을 우선한다.
+        sm = (re.search(r'document_srl=(\d{6,})', href)
+              or re.search(r'/(\d{9,})(?:[/?#]|$)', href))
         if not sm:
             continue
         cate = re.search(r'class="cate"[^>]*>(.*?)</td>', chunk, re.S)
