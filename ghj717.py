@@ -1066,7 +1066,7 @@ def easy_show_log(root):
 def easy_main():
     source, home, root = Path(__file__).resolve(), Path.home(), data_dir()
     prefix = Path(os.environ.get("PREFIX", "/not-termux"))
-    if sys.platform != "linux" or not (prefix / "bin/pkg").is_file():
+    if sys.platform not in ("linux", "android") or not (prefix / "bin/pkg").is_file():
         raise SafeError("이 파일을 기존처럼 패드의 Termux에서 실행해주세요. 컴퓨터에서는 감시를 시작하지 않습니다.")
     if root != (home / ".local/share/ghj717").resolve() or config_path() != (home / ".config/ghj717/config.json").resolve():
         raise SafeError("기록 저장 경로가 별도로 설정돼 있습니다. 기존 기록을 보호하려고 멈췄습니다.")
