@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fmkorea 고수 새 글 알리미 (패드/Termux판) — 로그인 쿠키 방식
-- fm_cookie.txt 에 저장한 로그인 쿠키로 '로그인된 상태'로 회원검색합니다.
+fmkorea 고수 새 글 알리미 (패드/Termux판) — 로그인 쿠키 방식 v2
+
 준비물:  pip install curl_cffi
-실행:    python ghj717.py          한 번 확인(테스트)
+설정 파일(스크립트와 같은 폴더):
+  - fm_cookie.txt : PC 브라우저에서 복사한 로그인 쿠키(한 줄)
+실행:    python ghj717.py          한 번 확인(기록 있으면 실제 전송함)
          python ghj717.py watch     계속 감시
 """
 import json, os, random, re, sys, time
-import urllib.request, urllib.parse
+import urllib.request, urllib.parse, urllib.error
 
 try:
     from curl_cffi import requests as cffi
@@ -16,10 +18,7 @@ except ImportError:
     print("먼저 curl_cffi 를 설치해주세요:  pip install curl_cffi")
     sys.exit(1)
 
-# ===== 설정 ======================================================
-BOT_TOKEN = "8992521880:AAHiMAWW0grsm4I89lzteNb_AfqWYgKkMmc"
-CHAT_ID = "7979521679"
-
+# ===== 감시 대상 =================================================
 MEMBERS = [
     ("뽀삐햄",     "stock", "7884592847"),
     ("역천신공",   "stock", "5120217388"),
@@ -42,11 +41,10 @@ MEMBERS = [
     ("삼전하닉피보나치햄", "stock", "105788011"),
     ("HA2햄",      "stock", "3158413881"),
 ]
-
 PRIORITY = {"뽀삐햄", "노라무"}
 PRIORITY_WEIGHT = 3
 MEMBER_GAP_SEC = 50
-MAX_MESSAGES_PER_MEMBER = 10
+MAX_MESSAGES_PER_MEMBER = 20
 IMPERSONATE = "chrome"
 # ================================================================
 
@@ -55,25 +53,12 @@ STATE_FILE = os.path.join(BASE, "ghj717_state.json")
 COOKIE_FILE = os.path.join(BASE, "fm_cookie.txt")
 
 
-def load_cookie():
-    try:
-        with open(COOKIE_FILE, "r", encoding="utf-8") as f:
-            c = f.read().strip()
-        # "Cookie:" 접두어나 줄바꿈이 섞여 들어와도 정리
-        c = re.sub(r"(?i)^cookie:\s*", "", c).replace("\n", " ").strip()
-        return c
-    except FileNotFoundError:
-        return ""
-
-
-COOKIE = load_cookie()
-if not COOKIE:
-    print("fm_cookie.txt 가 비어있어요. PC 브라우저에서 로그인 쿠키를 복사해 넣어주세요.")
-    sys.exit(1)
+# 봇 토큰/대상 (코드에 직접 보관)
+BOT_TOKEN = "8992521880:AAHiMAWW0grsm4I89lzteNb_AfqWYgKkMmc"
+CHAT_ID = "7979521679"
 
 _session = cffi.Session(impersonate=IMPERSONATE)
-EXTRA_HEADERS = {
-    "Cookie": COOKIE,
+BASE_HEADERS = {
     "Referer": "https://www.fmkorea.com/",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -86,6 +71,16 @@ EXTRA_HEADERS = {
 TAG_RE = re.compile(r"<[^>]+>")
 
 
+def get_cookie():
+    # 실행 중에도 매번 파일을 다시 읽어, 쿠키를 갈아끼우면 재시작 없이 반영됨
+    try:
+        with open(COOKIE_FILE, "r", encoding="utf-8") as f:
+            c = f.read().strip()
+        return re.sub(r"(?i)^cookie:\s*", "", c).replace("\n", " ").strip()
+    except FileNotFoundError:
+        return ""
+
+
 def strip_tags(s):
     return re.sub(r"\s+", " ", TAG_RE.sub("", s)).strip()
 
@@ -96,10 +91,14 @@ def member_url(mid, srl):
 
 
 def fetch(url, tries=2):
+    cookie = get_cookie()
+    if not cookie:
+        raise RuntimeError("fm_cookie.txt 가 비어있음 — 쿠키를 넣어주세요")
+    headers = dict(BASE_HEADERS); headers["Cookie"] = cookie
     last = None
     for attempt in range(tries):
         try:
-            r = _session.get(url, headers=EXTRA_HEADERS, timeout=30)
+            r = _session.get(url, headers=headers, timeout=30)
             if r.status_code in (429, 430, 503, 403):
                 if attempt == tries - 1:
                     raise RuntimeError(f"HTTP {r.status_code} (차단)")
@@ -118,22 +117,55 @@ def load_state():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        # 손상된 경우: 빈 기록으로 덮지 않고 백업만 남긴 뒤 중단(오인 재기준 방지)
+        try:
+            os.replace(STATE_FILE, STATE_FILE + ".corrupt")
+            print("상태 파일이 손상됐어요. .corrupt 로 보관했어요. 이어서 새로 기준을 잡습니다.")
+        except Exception:
+            pass
         return {}
 
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
+    # 안전 저장: 임시 파일에 다 쓰고 원본과 교체(쓰다 중단돼도 원본 안 깨짐)
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, STATE_FILE)
 
 
-def send_telegram(text):
+def send_telegram(text, tries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = urllib.parse.urlencode({"chat_id": CHAT_ID, "text": text,
                                    "disable_web_page_preview": "true"}).encode("utf-8")
-    req = urllib.request.Request(url, data=data)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    for attempt in range(tries):
+        try:
+            req = urllib.request.Request(url, data=data)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+            if res.get("ok"):
+                return True
+            raise RuntimeError("telegram ok=false: " + str(res.get("description", "")))
+        except urllib.error.HTTPError as e:
+            body = {}
+            try:
+                body = json.loads(e.read().decode("utf-8") or "{}")
+            except Exception:
+                pass
+            if e.code == 429:  # 전송 제한 → retry_after 만큼 대기 후 재시도
+                wait = int((body.get("parameters") or {}).get("retry_after", 5))
+                if attempt == tries - 1:
+                    raise
+                time.sleep(min(wait, 60) + 1); continue
+            raise RuntimeError(f"telegram HTTP {e.code}: {body.get('description','')}")
+        except Exception:
+            if attempt == tries - 1:
+                raise
+            time.sleep(3)
+    raise RuntimeError("telegram 전송 실패")
 
 
 def parse_posts(html):
@@ -159,10 +191,23 @@ def looks_login(html):
     return ("dispMemberLoginForm" in html or "비밀번호" in html) and 'class="hx"' not in html
 
 
+def notify_login_fail(state):
+    # 로그인 상태 확인 실패(쿠키 만료/무효 등)를 텔레그램으로 1회만 알림
+    if state.get("_login_alerted"):
+        return
+    try:
+        send_telegram("⚠️ fmkorea 로그인 확인 실패 — 감시가 멈췄어요.\n"
+                      "PC 브라우저에서 로그인 쿠키를 다시 복사해 fm_cookie.txt 를 갱신해주세요.")
+        state["_login_alerted"] = True
+        save_state(state)
+    except Exception as e:
+        print(f"경보 전송 실패: {e}")
+
+
 def build_message(name, p):
     cate = f"[{p['cate']}] " if p.get("cate") else ""
-    date = f"\n🗓 {p['date']}" if p.get("date") else ""
-    return (f"📝 {name} 새 글!\n\n{cate}{p['title']}{date}\n"
+    date = f"\n\U0001f5d3 {p['date']}" if p.get("date") else ""
+    return (f"\U0001f4dd {name} 새 글!\n\n{cate}{p['title']}{date}\n"
             f"https://www.fmkorea.com/{p['srl']}")
 
 
@@ -175,10 +220,14 @@ def check_member(state, name, mid, srl):
     posts = parse_posts(html)
     if not posts:
         if looks_login(html):
-            print(f"[{name}] 로그인 만료/쿠키 문제 — fm_cookie.txt 를 새로 갱신하세요")
+            print(f"[{name}] 로그인 확인 실패 — fm_cookie.txt 갱신 필요")
+            notify_login_fail(state)
         else:
             print(f"[{name}] 글 목록 못 찾음 — 다음 순번에 재시도")
         return
+    # 정상 수신 → 경보 플래그 해제
+    if state.get("_login_alerted"):
+        state["_login_alerted"] = False
     posts.sort(key=lambda p: int(p["srl"]))
     newest = int(posts[-1]["srl"]); last = int(state.get(key, 0))
     if last == 0:
