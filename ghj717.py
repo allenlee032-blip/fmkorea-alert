@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fmkorea 고수 새 글 알리미 (패드/Termux판) — 간단 버전
+fmkorea 고수 새 글 알리미 (패드/Termux판) — 로그인 쿠키 방식
+- fm_cookie.txt 에 저장한 로그인 쿠키로 '로그인된 상태'로 회원검색합니다.
 준비물:  pip install curl_cffi
 실행:    python ghj717.py          한 번 확인(테스트)
          python ghj717.py watch     계속 감시
@@ -51,10 +52,28 @@ IMPERSONATE = "chrome"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE, "ghj717_state.json")
+COOKIE_FILE = os.path.join(BASE, "fm_cookie.txt")
+
+
+def load_cookie():
+    try:
+        with open(COOKIE_FILE, "r", encoding="utf-8") as f:
+            c = f.read().strip()
+        # "Cookie:" 접두어나 줄바꿈이 섞여 들어와도 정리
+        c = re.sub(r"(?i)^cookie:\s*", "", c).replace("\n", " ").strip()
+        return c
+    except FileNotFoundError:
+        return ""
+
+
+COOKIE = load_cookie()
+if not COOKIE:
+    print("fm_cookie.txt 가 비어있어요. PC 브라우저에서 로그인 쿠키를 복사해 넣어주세요.")
+    sys.exit(1)
 
 _session = cffi.Session(impersonate=IMPERSONATE)
-# 진짜 페이지 방문처럼 보이는 헤더(가능한 최선)
 EXTRA_HEADERS = {
+    "Cookie": COOKIE,
     "Referer": "https://www.fmkorea.com/",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -136,6 +155,10 @@ def parse_posts(html):
     return out
 
 
+def looks_login(html):
+    return ("dispMemberLoginForm" in html or "비밀번호" in html) and 'class="hx"' not in html
+
+
 def build_message(name, p):
     cate = f"[{p['cate']}] " if p.get("cate") else ""
     date = f"\n🗓 {p['date']}" if p.get("date") else ""
@@ -146,11 +169,16 @@ def build_message(name, p):
 def check_member(state, name, mid, srl):
     key = "fm_" + srl
     try:
-        posts = parse_posts(fetch(member_url(mid, srl)))
+        html = fetch(member_url(mid, srl))
     except Exception as e:
         print(f"[{name}] 실패({e}) — 다음 순번에 재시도"); return
+    posts = parse_posts(html)
     if not posts:
-        print(f"[{name}] 글 목록 못 찾음 — 다음 순번에 재시도"); return
+        if looks_login(html):
+            print(f"[{name}] 로그인 만료/쿠키 문제 — fm_cookie.txt 를 새로 갱신하세요")
+        else:
+            print(f"[{name}] 글 목록 못 찾음 — 다음 순번에 재시도")
+        return
     posts.sort(key=lambda p: int(p["srl"]))
     newest = int(posts[-1]["srl"]); last = int(state.get(key, 0))
     if last == 0:
